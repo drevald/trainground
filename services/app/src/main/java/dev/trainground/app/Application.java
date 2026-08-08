@@ -1,7 +1,7 @@
 package dev.trainground.app;
 
 import org.springframework.boot.SpringApplication;
-import org.springframework.boot.SpringBootApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
 public class Application {
