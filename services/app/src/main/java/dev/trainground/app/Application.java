@@ -9,9 +9,10 @@ import org.springframework.stereotype.Component;
 import java.util.concurrent.ThreadLocalRandom;
 
 @SpringBootApplication
+@EnableScheduling
 public class Application {
     public static void main(String[] args) {
-        SpringApplication.run(Application.class);
+        SpringApplication.run(Application.class, args);
     }
 }
 
@@ -20,7 +21,7 @@ class ChaosMonkey {
     @Scheduled(fixedRate = 30000)
     void maybeDie() {
         if (ThreadLocalRandom.current().nextInt(10) == 0) {
-            System.out.println("ChaosMonkeyL simulating crash now");
+            System.out.println("ChaosMonkey: simulating crash now");
             System.exit(1);
         }
     }
