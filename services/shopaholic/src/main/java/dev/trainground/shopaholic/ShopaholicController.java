@@ -15,9 +15,14 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 @RestController
 @RequestMapping("/shop")
 class ShopaholicController {
+
+    private static final Logger logger = LoggerFactory.getLogger(ShopaholicController.class);
 
     private final RestTemplate restTemplate = new RestTemplate();
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -26,7 +31,7 @@ class ShopaholicController {
     private final AtomicLong failed = new AtomicLong();
     private ExecutorService executor;
 
-    @Value("@{target.url:http://app:8080/orders}")
+    @Value("${target.url:http://app:8080/orders}")
     private String targetUrl;
 
     @PostMapping("/start")
@@ -76,6 +81,7 @@ class ShopaholicController {
             succeeded.incrementAndGet();
         } catch (Exception e) {
             failed.incrementAndGet();
+            logger.warn("Order failed: {}", e.getMessage());
         }
     }
 
