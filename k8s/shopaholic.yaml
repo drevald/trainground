@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shopaholic
+  namespace: amazon-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: shopaholic}
+  template:
+    metadata:
+      labels: {app: shopaholic}
+    spec:
+      containers:
+        - name: shopaholic
+          image: localhost:5000/shopaholic:v1
+          imagePullPolicy: Always
+          env:
+            - name: TARGET_URL
+              value: "http://app:8080/orders"
+            - name: SERVER_PORT
+              value: "8080"
+          ports: [{containerPort: 8080}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shopaholic
+  namespace: amazon-lab
+spec:
+  type: NodePort
+  selector: {app: shopaholic}
+  ports: [{port: 8080, targetPort: 8080, nodePort: 30081}]
