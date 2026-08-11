@@ -1,5 +1,7 @@
 package dev.trainground.app;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -18,10 +20,12 @@ public class Application {
 
 @Component
 class ChaosMonkey {
+    private static final Logger log = LoggerFactory.getLogger(ChaosMonkey.class);
+
     @Scheduled(fixedRate = 30000)
     void maybeDie() {
         if (ThreadLocalRandom.current().nextInt(10) == 0) {
-            System.out.println("ChaosMonkey: simulating crash now");
+            log.warn("ChaosMonkey: simulating crash now");
             System.exit(1);
         }
     }
