@@ -1,0 +1,10 @@
+grafana:
+  defaultDashboardsEnabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
