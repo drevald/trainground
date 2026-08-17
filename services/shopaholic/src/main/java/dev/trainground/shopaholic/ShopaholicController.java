@@ -9,6 +9,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
+
+import reactor.netty.http.client.HttpClient;
+import reactor.netty.resources.ConnectionProvider;
+
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -29,7 +34,16 @@ class ShopaholicController {
 
     private static final Logger log = LoggerFactory.getLogger(ShopaholicController.class);
 
-    private final WebClient webClient = WebClient.builder().build();
+    private final ConnectionProvider connectionProvider = ConnectionProvider.builder("shopaholic-pool")
+        .maxConnections(2000)
+        .pendingAcquireMaxCount(500000)
+        .pendingAcquireTimeout(Duration.ofSeconds(10))
+        .build();
+
+    private final WebClient webClient = WebClient.builder()
+        .clientConnector(new ReactorClientHttpConnector(HttpClient.create(connectionProvider)))
+        .build();
+
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong sent = new AtomicLong();
     private final AtomicLong succeeded = new AtomicLong();
@@ -60,9 +74,7 @@ class ShopaholicController {
         succeeded.set(0);
         failed.set(0);
 
-        long intervalNanos = 1_000_000_000L / Math.max(rps, 1);
-
-        subscription = Flux.interval(Duration.ofNanos(intervalNanos))
+        subscription = Flux.range(0, Integer.MAX_VALUE)
                 .take(Duration.ofSeconds(durationSeconds))
                 .flatMap(tick -> sendOrder(), threads)
                 .doFinally(signal -> running.set(false))
