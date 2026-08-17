@@ -28,7 +28,7 @@ spec:
             - name: SERVER_PORT
               value: "8080"
             - name: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
-              value: "35"
+              value: "60"
             - name: SERVER_TOMCAT_THREADS_MAX
               value: "400"
           ports: [{containerPort: 8080}]

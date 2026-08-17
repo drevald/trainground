@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PathVariable;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -47,6 +48,12 @@ class ProductController {
     @GetMapping
     List<Product> all() {
         return repository.findAll();
+    }
+
+    @GetMapping("/{id}")
+    Product one(@PathVariable Long id) {
+        return repository.findById(id)
+            .orElseThrow(() -> new IllegalArgumentException("Unknown productId:" + id));
     }
 
     @PostMapping
