@@ -8,12 +8,15 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -26,18 +29,18 @@ class ShopaholicController {
 
     private static final Logger log = LoggerFactory.getLogger(ShopaholicController.class);
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final WebClient webClient = WebClient.builder().build();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong sent = new AtomicLong();
     private final AtomicLong succeeded = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
-    private ExecutorService executor;
     private volatile List<Long> productIds = List.of();
+    private Disposable subscription;
 
-    @Value("${orders.url:http://app:8080/orders}")
+    @Value("${orders.url:http://order-service:8080/orders}")
     private String ordersUrl;
 
-    @Value("${products.url:http://app:8080/products}")
+    @Value("${products.url:http://order-service:8080/products}")
     private String productsUrl;
 
     @PostMapping("/start")
@@ -57,32 +60,23 @@ class ShopaholicController {
         succeeded.set(0);
         failed.set(0);
 
-        executor = Executors.newVirtualThreadPerTaskExecutor();
-        long delayMs = 1000L * threads / Math.max(rps, 1);
-        long endAt = System.currentTimeMillis() + durationSeconds * 1000L;
+        long intervalNanos = 1_000_000_000L / Math.max(rps, 1);
 
-        for (int i = 0; i < threads; i++) {
-            executor.submit(() -> {
-                while (running.get() && System.currentTimeMillis() < endAt) {
-                    sendOrder();
-                    try {
-                        Thread.sleep(delayMs);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-                running.set(false);
-            });
-        }
-        return "Shopaholic started: rps=" + rps + " threads=" + threads
+        subscription = Flux.interval(Duration.ofNanos(intervalNanos))
+                .take(Duration.ofSeconds(durationSeconds))
+                .flatMap(tick -> sendOrder(), threads)
+                .doFinally(signal -> running.set(false))
+                .subscribeOn(Schedulers.parallel())
+                .subscribe();
+
+        return "Shopaholic started (WebClient): rps=" + rps + " concurrency=" + threads
                 + " duration=" + durationSeconds + "s catalogSize=" + productIds.size();
     }
 
     @PostMapping("/stop")
     String stop() {
         running.set(false);
-        if (executor != null) executor.shutdownNow();
+        if (subscription != null) subscription.dispose();
         return "Shopaholic stopped";
     }
 
@@ -94,7 +88,8 @@ class ShopaholicController {
 
     private void refreshCatalog() {
         try {
-            Product[] products = restTemplate.getForObject(productsUrl, Product[].class);
+            Product[] products = webClient.get().uri(productsUrl)
+                    .retrieve().bodyToMono(Product[].class).block(Duration.ofSeconds(5));
             productIds = products == null ? List.of() : List.of(
                     java.util.Arrays.stream(products).map(Product::id).toArray(Long[]::new));
         } catch (Exception e) {
@@ -103,21 +98,25 @@ class ShopaholicController {
         }
     }
 
-    private void sendOrder() {
-        sent.incrementAndGet();
-        try {
-            List<Long> ids = productIds;
-            if (ids.isEmpty()) {
-                failed.incrementAndGet();
-                return;
-            }
-            Long productId = ids.get(ThreadLocalRandom.current().nextInt(ids.size()));
-            var body = Map.of("productId", productId);
-            restTemplate.postForObject(ordersUrl, body, String.class);
-            succeeded.incrementAndGet();
-        } catch (Exception e) {
+    private Mono<Void> sendOrder() {
+        List<Long> ids = productIds;
+        if (ids.isEmpty()) {
             failed.incrementAndGet();
-            log.warn("Order failed: {}", e.getMessage());
+            return Mono.empty();
         }
+        sent.incrementAndGet();
+        Long productId = ids.get(ThreadLocalRandom.current().nextInt(ids.size()));
+        var body = Map.of("productId", productId);
+        return webClient.post().uri(ordersUrl)
+                .bodyValue(body)
+                .retrieve()
+                .bodyToMono(String.class)
+                .doOnSuccess(r -> succeeded.incrementAndGet())
+                .doOnError(e -> {
+                    failed.incrementAndGet();
+                    log.warn("Order failed: {}", e.getMessage());
+                })
+                .onErrorResume(e -> Mono.empty())
+                .then();
     }
 }
