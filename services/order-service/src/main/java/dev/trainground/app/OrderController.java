@@ -35,6 +35,8 @@ class Order {
 
     private BigDecimal priceAtOrderTime;
 
+    private String idempotencyKey;
+
     public Order() {}
 
     public Long getId() { return id; }
@@ -46,9 +48,13 @@ class Order {
     public void setWarehouse(Warehouse warehouse) { this.warehouse = warehouse; }
     public BigDecimal getPriceAtOrderTime() { return priceAtOrderTime; }
     public void setPriceAtOrderTime(BigDecimal priceAtOrderTime) { this.priceAtOrderTime = priceAtOrderTime; }
+    public String getIdempotencyKey() { return idempotencyKey; }
+    public void setIdempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; }
 }
 
-interface OrderRepository extends JpaRepository<Order, Long> {}
+interface OrderRepository extends JpaRepository<Order, Long> {
+    Optional<Order> findByIdempotencyKey(String idempotencyKey);
+}
 
 @RestController
 @RequestMapping("/orders")
@@ -56,18 +62,15 @@ class OrderController {
     private final OrderRepository orderRepository;
     private final ProductRepository productRepository;
     private final CustomerRepository customerRepository;
-    private final WarehouseRepository warehouseRepository;
     private final InventoryRepository inventoryRepository;
 
     OrderController(OrderRepository orderRepository,
                      ProductRepository productRepository,
                      CustomerRepository customerRepository,
-                     WarehouseRepository warehouseRepository,
                      InventoryRepository inventoryRepository) {
         this.orderRepository = orderRepository;
         this.productRepository = productRepository;
         this.customerRepository = customerRepository;
-        this.warehouseRepository = warehouseRepository;
         this.inventoryRepository = inventoryRepository;
     }
 
@@ -78,6 +81,13 @@ class OrderController {
 
     @PostMapping
     Order create(@RequestBody OrderRequest request) {
+        if (request.idempotencyKey() != null) {
+            Optional<Order> existing = orderRepository.findByIdempotencyKey(request.idempotencyKey());
+            if (existing.isPresent()) {
+                return existing.get();
+            }
+        }
+
         Product product = productRepository.findById(request.productId())
                 .orElseThrow(() -> new IllegalArgumentException("Unknown productId: " + request.productId()));
         Customer customer = customerRepository.findById(request.customerId())
@@ -90,6 +100,7 @@ class OrderController {
         order.setCustomer(customer);
         order.setWarehouse(warehouse);
         order.setPriceAtOrderTime(product.getPrice());
+        order.setIdempotencyKey(request.idempotencyKey());
         return orderRepository.save(order);
     }
 
@@ -113,4 +124,4 @@ class OrderController {
     }
 }
 
-record OrderRequest(Long productId, Long customerId) {}
+record OrderRequest(Long productId, Long customerId, String idempotencyKey) {}

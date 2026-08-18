@@ -10,22 +10,26 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
+
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.resources.ConnectionProvider;
+import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 record Product(Long id, String name, Object price) {}
-record Customer(Long id, String name, String city) {}
+record CustomerRef(Long id) {}
+record CustomerPage(List<CustomerRef> content, int totalPages) {}
 
 @RestController
 @RequestMapping("/shop")
@@ -48,7 +52,7 @@ class ShopaholicController {
     private final AtomicLong succeeded = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
     private volatile List<Long> productIds = List.of();
-    private volatile List<Long> customerIds = List.of();
+    private volatile int customerTotalPages = 1;
     private Disposable subscription;
 
     @Value("${orders.url:http://order-service:8080/orders}")
@@ -68,9 +72,9 @@ class ShopaholicController {
             return "Already shopping";
         }
         refreshCatalog();
-        refreshCustomers();
-        if (productIds.isEmpty() || customerIds.isEmpty()) {
-            return "Catalog or customers empty, seed data first via POST " + productsUrl + " and " + customersUrl;
+        refreshCustomerPageCount();
+        if (productIds.isEmpty()) {
+            return "Catalog is empty, seed products first via POST " + productsUrl;
         }
 
         running.set(true);
@@ -87,7 +91,7 @@ class ShopaholicController {
 
         return "Shopaholic started (WebClient): concurrency=" + threads
                 + " duration=" + durationSeconds + "s catalogSize=" + productIds.size()
-                + " customers=" + customerIds.size();
+                + " customerPages=" + customerTotalPages;
     }
 
     @PostMapping("/stop")
@@ -99,8 +103,8 @@ class ShopaholicController {
 
     @GetMapping("/status")
     String status() {
-        return String.format("shopping=%s sent=%d succeeded=%d failed=%d catalogSize=%d customers=%d",
-                running.get(), sent.get(), succeeded.get(), failed.get(), productIds.size(), customerIds.size());
+        return String.format("shopping=%s sent=%d succeeded=%d failed=%d catalogSize=%d customerPages=%d",
+                running.get(), sent.get(), succeeded.get(), failed.get(), productIds.size(), customerTotalPages);
     }
 
     private void refreshCatalog() {
@@ -115,37 +119,50 @@ class ShopaholicController {
         }
     }
 
-    private void refreshCustomers() {
+    private void refreshCustomerPageCount() {
         try {
-            Customer[] customers = webClient.get().uri(customersUrl)
-                    .retrieve().bodyToMono(Customer[].class).block(Duration.ofSeconds(5));
-            customerIds = customers == null ? List.of() : List.of(
-                    java.util.Arrays.stream(customers).map(Customer::id).toArray(Long[]::new));
+            CustomerPage page = webClient.get().uri(customersUrl + "?page=0&size=100")
+                    .retrieve().bodyToMono(CustomerPage.class).block(Duration.ofSeconds(5));
+            customerTotalPages = page == null ? 1 : Math.max(page.totalPages(), 1);
         } catch (Exception e) {
-            log.warn("Failed to load customers: {}", e.getMessage());
-            customerIds = List.of();
+            log.warn("Failed to load customer page count: {}", e.getMessage());
+            customerTotalPages = 1;
         }
     }
 
     private Mono<Void> sendOrder() {
         List<Long> pids = productIds;
-        List<Long> cids = customerIds;
-        if (pids.isEmpty() || cids.isEmpty()) {
+        if (pids.isEmpty()) {
             failed.incrementAndGet();
             return Mono.empty();
         }
         sent.incrementAndGet();
         Long productId = pids.get(ThreadLocalRandom.current().nextInt(pids.size()));
-        Long customerId = cids.get(ThreadLocalRandom.current().nextInt(cids.size()));
+        int randomPage = ThreadLocalRandom.current().nextInt(customerTotalPages);
+        String idempotencyKey = UUID.randomUUID().toString();
 
         return webClient.get().uri(productsUrl + "/" + productId)
                 .retrieve().bodyToMono(Product.class)
-                .flatMap(browsedProduct -> {
-                    var body = Map.of("productId", productId, "customerId", customerId);
+                .flatMap(browsedProduct ->
+                    webClient.get().uri(customersUrl + "?page=" + randomPage + "&size=100")
+                        .retrieve().bodyToMono(CustomerPage.class)
+                )
+                .flatMap(customerPage -> {
+                    if (customerPage.content().isEmpty()) {
+                        return Mono.error(new IllegalStateException("Empty customer page"));
+                    }
+                    Long customerId = customerPage.content()
+                            .get(ThreadLocalRandom.current().nextInt(customerPage.content().size()))
+                            .id();
+                    var body = Map.of(
+                            "productId", productId,
+                            "customerId", customerId,
+                            "idempotencyKey", idempotencyKey);
                     return webClient.post().uri(ordersUrl)
                             .bodyValue(body)
                             .retrieve()
                             .bodyToMono(String.class);
+//                            .retryWhen(Retry.backoff(3, Duration.ofMillis(100)).maxBackoff(Duration.ofSeconds(2)));
                 })
                 .doOnSuccess(r -> succeeded.incrementAndGet())
                 .doOnError(e -> {

@@ -24,9 +24,9 @@ class ChaosMonkey {
 
     @Scheduled(fixedRate = 30000)
     void maybeDie() {
-        if (ThreadLocalRandom.current().nextInt(10) == 0) {
-            log.warn("ChaosMonkey: simulating crash now");
-            System.exit(1);
-        }
+//        if (ThreadLocalRandom.current().nextInt(10) == 0) {
+//            log.warn("ChaosMonkey: simulating crash now");
+//            System.exit(1);
+//        }
     }
 }
