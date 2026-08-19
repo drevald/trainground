@@ -4,24 +4,22 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
-
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.resources.ConnectionProvider;
-import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -30,6 +28,7 @@ import java.util.concurrent.atomic.AtomicLong;
 record Product(Long id, String name, Object price) {}
 record CustomerRef(Long id) {}
 record CustomerPage(List<CustomerRef> content, int totalPages) {}
+record OrderRequest(Long productId, Long customerId, String idempotencyKey) {}
 
 @RestController
 @RequestMapping("/shop")
@@ -47,6 +46,12 @@ class ShopaholicController {
             .clientConnector(new ReactorClientHttpConnector(HttpClient.create(connectionProvider)))
             .build();
 
+    private final KafkaTemplate<String, OrderRequest> kafkaTemplate;
+
+    ShopaholicController(KafkaTemplate<String, OrderRequest> kafkaTemplate) {
+        this.kafkaTemplate = kafkaTemplate;
+    }
+
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong sent = new AtomicLong();
     private final AtomicLong succeeded = new AtomicLong();
@@ -54,9 +59,6 @@ class ShopaholicController {
     private volatile List<Long> productIds = List.of();
     private volatile int customerTotalPages = 1;
     private Disposable subscription;
-
-    @Value("${orders.url:http://order-service:8080/orders}")
-    private String ordersUrl;
 
     @Value("${products.url:http://order-service:8080/products}")
     private String productsUrl;
@@ -67,7 +69,8 @@ class ShopaholicController {
     @PostMapping("/start")
     String start(@RequestParam(defaultValue = "5") int rps,
                  @RequestParam(defaultValue = "3") int threads,
-                 @RequestParam(defaultValue = "60") int durationSeconds) {
+                 @RequestParam(defaultValue = "60") int durationSeconds,
+                 @RequestParam(defaultValue = "1") int browsePages) {
         if (running.get()) {
             return "Already shopping";
         }
@@ -84,14 +87,14 @@ class ShopaholicController {
 
         subscription = Flux.range(0, Integer.MAX_VALUE)
                 .take(Duration.ofSeconds(durationSeconds))
-                .flatMap(tick -> sendOrder(), threads)
+                .flatMap(tick -> sendOrder(browsePages), threads)
                 .doFinally(signal -> running.set(false))
                 .subscribeOn(Schedulers.parallel())
                 .subscribe();
 
-        return "Shopaholic started (WebClient): concurrency=" + threads
+        return "Shopaholic started (Kafka): concurrency=" + threads
                 + " duration=" + durationSeconds + "s catalogSize=" + productIds.size()
-                + " customerPages=" + customerTotalPages;
+                + " customerPages=" + customerTotalPages + " browsePages=" + browsePages;
     }
 
     @PostMapping("/stop")
@@ -130,7 +133,7 @@ class ShopaholicController {
         }
     }
 
-    private Mono<Void> sendOrder() {
+    private Mono<Void> sendOrder(int browsePages) {
         List<Long> pids = productIds;
         if (pids.isEmpty()) {
             failed.incrementAndGet();
@@ -138,31 +141,41 @@ class ShopaholicController {
         }
         sent.incrementAndGet();
         Long productId = pids.get(ThreadLocalRandom.current().nextInt(pids.size()));
-        int randomPage = ThreadLocalRandom.current().nextInt(customerTotalPages);
         String idempotencyKey = UUID.randomUUID().toString();
 
-        return webClient.get().uri(productsUrl + "/" + productId)
-                .retrieve().bodyToMono(Product.class)
-                .flatMap(browsedProduct ->
-                    webClient.get().uri(customersUrl + "?page=" + randomPage + "&size=100")
-                        .retrieve().bodyToMono(CustomerPage.class)
-                )
-                .flatMap(customerPage -> {
-                    if (customerPage.content().isEmpty()) {
-                        return Mono.error(new IllegalStateException("Empty customer page"));
-                    }
-                    Long customerId = customerPage.content()
-                            .get(ThreadLocalRandom.current().nextInt(customerPage.content().size()))
-                            .id();
-                    var body = Map.of(
-                            "productId", productId,
-                            "customerId", customerId,
-                            "idempotencyKey", idempotencyKey);
-                    return webClient.post().uri(ordersUrl)
-                            .bodyValue(body)
-                            .retrieve()
-                            .bodyToMono(String.class);
-//                            .retryWhen(Retry.backoff(3, Duration.ofMillis(100)).maxBackoff(Duration.ofSeconds(2)));
+        Mono<Void> browsing = Flux.range(0, browsePages)
+                .flatMap(i -> {
+                    Long randomProductId = pids.get(ThreadLocalRandom.current().nextInt(pids.size()));
+                    return webClient.get().uri(productsUrl + "/" + randomProductId)
+                            .retrieve().bodyToMono(Product.class)
+                            .onErrorResume(e -> Mono.empty());
+                }, 5)
+                .then();
+
+        Mono<Long> customerIdMono;
+        if (browsePages > 0) {
+            int randomPage = ThreadLocalRandom.current().nextInt(customerTotalPages);
+            customerIdMono = webClient.get().uri(customersUrl + "?page=" + randomPage + "&size=100")
+                    .retrieve().bodyToMono(CustomerPage.class)
+                    .flatMap(customerPage -> {
+                        if (customerPage.content().isEmpty()) {
+                            return Mono.error(new IllegalStateException("Empty customer page"));
+                        }
+                        return Mono.just(customerPage.content()
+                                .get(ThreadLocalRandom.current().nextInt(customerPage.content().size()))
+                                .id());
+                    });
+        } else {
+            customerIdMono = Mono.just((long) (ThreadLocalRandom.current().nextInt(100000) + 1));
+        }
+
+        return browsing.then(customerIdMono)
+                .flatMap(customerId -> {
+                    OrderRequest request = new OrderRequest(productId, customerId, idempotencyKey);
+                    return Mono.fromFuture(
+                            kafkaTemplate.send("order-requests", customerId.toString(), request)
+                                    .thenApply(result -> "sent")
+                    );
                 })
                 .doOnSuccess(r -> succeeded.incrementAndGet())
                 .doOnError(e -> {

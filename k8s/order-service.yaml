@@ -31,6 +31,20 @@ spec:
               value: "60"
             - name: SERVER_TOMCAT_THREADS_MAX
               value: "400"
+            - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+              value: "my-cluster-kafka-bootstrap.kafka.svc:9092"
+            - name: SPRING_KAFKA_CONSUMER_GROUP_ID
+              value: "order-service-group"
+            - name: SPRING_KAFKA_CONSUMER_KEY_DESERIALIZER
+              value: "org.apache.kafka.common.serialization.StringDeserializer"
+            - name: SPRING_KAFKA_CONSUMER_VALUE_DESERIALIZER
+              value: "org.springframework.kafka.support.serializer.JsonDeserializer"
+            - name: SPRING_KAFKA_CONSUMER_PROPERTIES_SPRING_JSON_TRUSTED_PACKAGES
+              value: "*"
+            - name: SPRING_KAFKA_CONSUMER_PROPERTIES_SPRING_JSON_VALUE_DEFAULT_TYPE
+              value: "dev.trainground.app.OrderRequest"
+            - name: SPRING_KAFKA_CONSUMER_PROPERTIES_SPRING_JSON_USE_TYPE_HEADERS
+              value: "false"
           ports: [{containerPort: 8080}]
           readinessProbe:
             httpGet:

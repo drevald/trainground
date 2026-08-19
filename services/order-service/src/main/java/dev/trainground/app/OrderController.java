@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.kafka.annotation.KafkaListener;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -79,8 +80,17 @@ class OrderController {
         return orderRepository.findAll();
     }
 
+    @KafkaListener(topics = "order-requests", groupId = "order-service-group")
+    void consumeOrderRequest(OrderRequest request) {
+        processOrder(request);
+    }
+
     @PostMapping
     Order create(@RequestBody OrderRequest request) {
+        return processOrder(request);
+    }
+
+    private Order processOrder(OrderRequest request) {
         if (request.idempotencyKey() != null) {
             Optional<Order> existing = orderRepository.findByIdempotencyKey(request.idempotencyKey());
             if (existing.isPresent()) {

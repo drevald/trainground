@@ -16,10 +16,14 @@ spec:
           image: localhost:5000/shopaholic:v1
           imagePullPolicy: Always
           env:
-            - name: TARGET_URL
-              value: "http://app:8080/orders"
             - name: SERVER_PORT
               value: "8080"
+            - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+              value: "my-cluster-kafka-bootstrap.kafka.svc:9092"
+            - name: SPRING_KAFKA_PRODUCER_KEY_SERIALIZER
+              value: "org.apache.kafka.common.serialization.StringSerializer"
+            - name: SPRING_KAFKA_PRODUCER_VALUE_SERIALIZER
+              value: "org.springframework.kafka.support.serializer.JsonSerializer"
           ports: [{containerPort: 8080}]
 ---
 apiVersion: v1
