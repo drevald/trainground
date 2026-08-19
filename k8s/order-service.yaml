@@ -45,6 +45,8 @@ spec:
               value: "dev.trainground.app.OrderRequest"
             - name: SPRING_KAFKA_CONSUMER_PROPERTIES_SPRING_JSON_USE_TYPE_HEADERS
               value: "false"
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "health,prometheus"
           ports: [{containerPort: 8080}]
           readinessProbe:
             httpGet:

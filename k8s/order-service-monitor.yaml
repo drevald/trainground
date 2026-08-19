@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: order-service-monitor
+  namespace: amazon-lab
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: order-service
+  endpoints:
+    - port: "8080"
+      path: /actuator/prometheus
+      interval: 15s

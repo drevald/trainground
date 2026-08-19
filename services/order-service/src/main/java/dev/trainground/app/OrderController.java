@@ -1,11 +1,17 @@
 package dev.trainground.app;
 
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.Optional;
+
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -14,12 +20,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.kafka.annotation.KafkaListener;
 
-import java.math.BigDecimal;
-import java.util.List;
-import java.util.Optional;
-
 @Entity
-@Table(name = "orders")
+@Table(name = "orders", indexes = {
+    @Index(name = "idx_orders_idempotency_key", columnList = "idempotency_key")
+})
 class Order {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -80,7 +84,7 @@ class OrderController {
         return orderRepository.findAll();
     }
 
-    @KafkaListener(topics = "order-requests", groupId = "order-service-group")
+    @KafkaListener(topics = "order-requests", groupId = "order-service-group", concurrency = "3")
     void consumeOrderRequest(OrderRequest request) {
         processOrder(request);
     }
