@@ -58,7 +58,11 @@ class ShopaholicController {
     private final AtomicLong failed = new AtomicLong();
     private volatile List<Long> productIds = List.of();
     private volatile int customerTotalPages = 1;
+    private volatile boolean useKafka = true;
     private Disposable subscription;
+
+    @Value("${orders.url:http://order-service:8080/orders}")
+    private String ordersUrl;
 
     @Value("${products.url:http://order-service:8080/products}")
     private String productsUrl;
@@ -70,10 +74,12 @@ class ShopaholicController {
     String start(@RequestParam(defaultValue = "5") int rps,
                  @RequestParam(defaultValue = "3") int threads,
                  @RequestParam(defaultValue = "60") int durationSeconds,
-                 @RequestParam(defaultValue = "1") int browsePages) {
+                 @RequestParam(defaultValue = "1") int browsePages,
+                 @RequestParam(defaultValue = "true") boolean useKafka) {
         if (running.get()) {
             return "Already shopping";
         }
+        this.useKafka = useKafka;
         refreshCatalog();
         refreshCustomerPageCount();
         if (productIds.isEmpty()) {
@@ -92,9 +98,10 @@ class ShopaholicController {
                 .subscribeOn(Schedulers.parallel())
                 .subscribe();
 
-        return "Shopaholic started (Kafka): concurrency=" + threads
+        return "Shopaholic started: concurrency=" + threads
                 + " duration=" + durationSeconds + "s catalogSize=" + productIds.size()
-                + " customerPages=" + customerTotalPages + " browsePages=" + browsePages;
+                + " customerPages=" + customerTotalPages + " browsePages=" + browsePages
+                + " useKafka=" + useKafka;
     }
 
     @PostMapping("/stop")
@@ -106,8 +113,8 @@ class ShopaholicController {
 
     @GetMapping("/status")
     String status() {
-        return String.format("shopping=%s sent=%d succeeded=%d failed=%d catalogSize=%d customerPages=%d",
-                running.get(), sent.get(), succeeded.get(), failed.get(), productIds.size(), customerTotalPages);
+        return String.format("shopping=%s sent=%d succeeded=%d failed=%d catalogSize=%d customerPages=%d useKafka=%s",
+                running.get(), sent.get(), succeeded.get(), failed.get(), productIds.size(), customerTotalPages, useKafka);
     }
 
     private void refreshCatalog() {
@@ -169,13 +176,22 @@ class ShopaholicController {
             customerIdMono = Mono.just((long) (ThreadLocalRandom.current().nextInt(100000) + 1));
         }
 
+        boolean kafkaPath = useKafka;
+
         return browsing.then(customerIdMono)
                 .flatMap(customerId -> {
                     OrderRequest request = new OrderRequest(productId, customerId, idempotencyKey);
-                    return Mono.fromFuture(
-                            kafkaTemplate.send("order-requests", customerId.toString(), request)
-                                    .thenApply(result -> "sent")
-                    );
+                    if (kafkaPath) {
+                        return Mono.fromFuture(
+                                kafkaTemplate.send("order-requests", customerId.toString(), request)
+                                        .thenApply(result -> "sent")
+                        );
+                    } else {
+                        return webClient.post().uri(ordersUrl)
+                                .bodyValue(request)
+                                .retrieve()
+                                .bodyToMono(String.class);
+                    }
                 })
                 .doOnSuccess(r -> succeeded.incrementAndGet())
                 .doOnError(e -> {
