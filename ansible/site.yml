@@ -1,0 +1,72 @@
+---
+- name: Provision trainground infrastructure
+  hosts: trainground
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop k3s if running
+      when: wipe_data | default(false)
+      systemd:
+        name: k3s
+        state: stopped
+      ignore_errors: true
+
+    - name: Wipe k3s data directory (clean slate)
+      when: wipe_data | default(false)
+      file:
+        path: /mnt/hdd/k3s-data
+        state: absent
+
+    - name: Check if k3s is already installed
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Install k3s
+      shell: |
+        curl -sfL https://get.k3s.io | sh -s - --disable traefik --disable servicelb --disable metrics-server --data-dir /mnt/hdd/k3s-data
+      when: not k3s_binary.stat.exists
+
+    - name: Start k3s service
+      systemd:
+        name: k3s
+        state: started
+        enabled: true
+
+    - name: Wait for k3s API to be ready
+      shell: kubectl get nodes
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: k3s_ready
+      until: k3s_ready.rc == 0
+      retries: 30
+      delay: 5
+
+    - name: Ensure kubeconfig is readable by user
+      file:
+        path: /etc/rancher/k3s/k3s.yaml
+        mode: '0644'
+
+    - name: Create namespaces
+      shell: kubectl create namespace {{ item }} --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      loop:
+        - amazon-lab
+        - kafka
+        - monitoring
+
+    - name: Create postgres secret
+      shell: kubectl -n amazon-lab create secret generic postgres-secret --from-literal=POSTGRES_PASSWORD=changeme123 --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Apply Postgres manifest
+      shell: kubectl apply -f /home/denis/trainground/k8s/postgres.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Wait for Postgres to be ready
+      shell: kubectl -n amazon-lab wait --for=condition=ready pod -l app=postgres --timeout=120s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
