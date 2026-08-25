@@ -4,18 +4,19 @@
   become: true
   gather_facts: false
   tasks:
+
     - name: Stop k3s if running
-      when: wipe_data | default(false)
       systemd:
         name: k3s
         state: stopped
       ignore_errors: true
+      when: wipe_data | default(false)
 
     - name: Wipe k3s data directory (clean slate)
-      when: wipe_data | default(false)
       file:
         path: /mnt/hdd/k3s-data
         state: absent
+      when: wipe_data | default(false)
 
     - name: Check if k3s is already installed
       stat:
@@ -68,5 +69,83 @@
 
     - name: Wait for Postgres to be ready
       shell: kubectl -n amazon-lab wait --for=condition=ready pod -l app=postgres --timeout=120s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Start local Docker registry
+      shell: docker run -d -p 0.0.0.0:5000:5000 -v /mnt/hdd/registry:/var/lib/registry --restart always --name registry registry:2
+      register: registry_start
+      failed_when: registry_start.rc != 0 and "already in use" not in registry_start.stderr
+
+    - name: Download Strimzi CRDs
+      get_url:
+        url: https://github.com/strimzi/strimzi-kafka-operator/releases/download/0.48.0/strimzi-crds-0.48.0.yaml
+        dest: /home/denis/trainground/k8s/vendor/strimzi-crds.yaml
+        timeout: 60
+
+    - name: Download Strimzi cluster operator manifest
+      get_url:
+        url: https://github.com/strimzi/strimzi-kafka-operator/releases/download/0.48.0/strimzi-cluster-operator-0.48.0.yaml
+        dest: /home/denis/trainground/k8s/vendor/strimzi-cluster-operator.yaml
+        timeout: 60
+
+    - name: Apply Strimzi CRDs
+      shell: kubectl apply -f /home/denis/trainground/k8s/vendor/strimzi-crds.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Apply Strimzi cluster operator
+      shell: kubectl apply -f /home/denis/trainground/k8s/vendor/strimzi-cluster-operator.yaml -n kafka
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Grant cluster-admin to Strimzi operator (workaround for RBAC namespace bug in official manifest)
+      shell: kubectl create clusterrolebinding strimzi-cluster-operator-admin --clusterrole=cluster-admin --serviceaccount=kafka:strimzi-cluster-operator --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Restart Strimzi operator to pick up RBAC fix
+      shell: kubectl -n kafka rollout restart deployment strimzi-cluster-operator
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      ignore_errors: true
+
+    - name: Wait for Strimzi operator to be ready
+      shell: kubectl -n kafka wait --for=condition=ready pod -l strimzi.io/kind=cluster-operator --timeout=120s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Apply Kafka cluster
+      shell: kubectl apply -f /home/denis/trainground/k8s/kafka-cluster.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Wait for Kafka broker to be ready
+      shell: kubectl -n kafka wait --for=condition=ready pod -l strimzi.io/name=my-cluster-kafka --timeout=180s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Apply Kafka topics
+      shell: kubectl apply -f /home/denis/trainground/k8s/order-requests-topic.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Apply order-service manifest
+      shell: kubectl apply -f /home/denis/trainground/k8s/order-service.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Apply shopaholic manifest
+      shell: kubectl apply -f /home/denis/trainground/k8s/shopaholic.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Wait for order-service to be ready
+      shell: kubectl -n amazon-lab wait --for=condition=ready pod -l app=order-service --timeout=180s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Wait for shopaholic to be ready
+      shell: kubectl -n amazon-lab wait --for=condition=ready pod -l app=shopaholic --timeout=120s
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
