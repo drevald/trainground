@@ -25,7 +25,7 @@ spec:
       containers:
         - name: postgres
           image: postgres:16
-          args: ["-c", "max_connections=600"]
+          args: ["-c", "max_connections=2000", "-c", "synchronous_commit=off"]
           env:
             - name: POSTGRES_PASSWORD
               valueFrom:

@@ -24,13 +24,13 @@ spec:
               valueFrom:
                 secretKeyRef: {name: postgres-secret, key: POSTGRES_PASSWORD}
             - name: SPRING_JPA_HIBERNATE_DDL_AUTO
-              value: update
+              value: validate
             - name: SERVER_PORT
               value: "8080"
             - name: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
               value: "60"
             - name: SERVER_TOMCAT_THREADS_MAX
-              value: "400"
+              value: "4000"
             - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
               value: "my-cluster-kafka-bootstrap.kafka.svc:9092"
             - name: SPRING_KAFKA_CONSUMER_GROUP_ID

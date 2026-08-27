@@ -17,6 +17,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.resources.ConnectionProvider;
+import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.util.List;
@@ -37,9 +38,9 @@ class ShopaholicController {
     private static final Logger log = LoggerFactory.getLogger(ShopaholicController.class);
 
     private final ConnectionProvider connectionProvider = ConnectionProvider.builder("shopaholic-pool")
-            .maxConnections(2000)
+            .maxConnections(20000)
             .pendingAcquireMaxCount(200000)
-            .pendingAcquireTimeout(Duration.ofSeconds(10))
+            .pendingAcquireTimeout(Duration.ofSeconds(3600))
             .build();
 
     private final WebClient webClient = WebClient.builder()
@@ -190,7 +191,9 @@ class ShopaholicController {
                         return webClient.post().uri(ordersUrl)
                                 .bodyValue(request)
                                 .retrieve()
-                                .bodyToMono(String.class);
+                                .bodyToMono(String.class)
+                                .retryWhen(Retry.backoff(3, Duration.ofMillis(100))
+                                    .maxBackoff(Duration.ofSeconds(2)));
                     }
                 })
                 .doOnSuccess(r -> succeeded.incrementAndGet())
