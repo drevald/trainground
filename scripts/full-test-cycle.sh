@@ -14,7 +14,7 @@ echo "=== 2. Restarting Postgres to clear stuck connections ==="
 kubectl -n amazon-lab rollout restart deployment postgres
 kubectl -n amazon-lab rollout status deployment postgres --timeout=60s
 kubectl -n amazon-lab wait --for=condition=ready pod -l app=postgres --timeout=60s
-sleep 5
+sleep 20
 
 POSTGRES_POD=$(kubectl -n amazon-lab get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
 

@@ -20,6 +20,7 @@ import reactor.netty.resources.ConnectionProvider;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
@@ -40,7 +41,7 @@ class ShopaholicController {
     private final ConnectionProvider connectionProvider = ConnectionProvider.builder("shopaholic-pool")
             .maxConnections(20000)
             .pendingAcquireMaxCount(200000)
-            .pendingAcquireTimeout(Duration.ofSeconds(3600))
+            .pendingAcquireTimeout(Duration.ofSeconds(10))
             .build();
 
     private final WebClient webClient = WebClient.builder()
@@ -58,7 +59,7 @@ class ShopaholicController {
     private final AtomicLong succeeded = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
     private volatile List<Long> productIds = List.of();
-    private volatile int customerTotalPages = 1;
+    private volatile List<Long> customerIds = List.of();
     private volatile boolean useKafka = true;
     private Disposable subscription;
 
@@ -82,9 +83,9 @@ class ShopaholicController {
         }
         this.useKafka = useKafka;
         refreshCatalog();
-        refreshCustomerPageCount();
-        if (productIds.isEmpty()) {
-            return "Catalog is empty, seed products first via POST " + productsUrl;
+        refreshCustomerIds();
+        if (productIds.isEmpty() || customerIds.isEmpty()) {
+            return "Catalog or customers empty, seed data first";
         }
 
         running.set(true);
@@ -101,7 +102,7 @@ class ShopaholicController {
 
         return "Shopaholic started: concurrency=" + threads
                 + " duration=" + durationSeconds + "s catalogSize=" + productIds.size()
-                + " customerPages=" + customerTotalPages + " browsePages=" + browsePages
+                + " customerCount=" + customerIds.size() + " browsePages=" + browsePages
                 + " useKafka=" + useKafka;
     }
 
@@ -114,8 +115,8 @@ class ShopaholicController {
 
     @GetMapping("/status")
     String status() {
-        return String.format("shopping=%s sent=%d succeeded=%d failed=%d catalogSize=%d customerPages=%d useKafka=%s",
-                running.get(), sent.get(), succeeded.get(), failed.get(), productIds.size(), customerTotalPages, useKafka);
+        return String.format("shopping=%s sent=%d succeeded=%d failed=%d catalogSize=%d customerCount=%d useKafka=%s",
+                running.get(), sent.get(), succeeded.get(), failed.get(), productIds.size(), customerIds.size(), useKafka);
     }
 
     private void refreshCatalog() {
@@ -130,20 +131,33 @@ class ShopaholicController {
         }
     }
 
-    private void refreshCustomerPageCount() {
+    private void refreshCustomerIds() {
         try {
-            CustomerPage page = webClient.get().uri(customersUrl + "?page=0&size=100")
-                    .retrieve().bodyToMono(CustomerPage.class).block(Duration.ofSeconds(5));
-            customerTotalPages = page == null ? 1 : Math.max(page.totalPages(), 1);
+            List<Long> ids = new ArrayList<>();
+            int page = 0;
+            boolean hasMore = true;
+            while (hasMore) {
+                CustomerPage customerPage = webClient.get().uri(customersUrl + "?page=" + page + "&size=1000")
+                        .retrieve().bodyToMono(CustomerPage.class).block(Duration.ofSeconds(10));
+                if (customerPage == null || customerPage.content().isEmpty()) {
+                    hasMore = false;
+                } else {
+                    customerPage.content().forEach(c -> ids.add(c.id()));
+                    page++;
+                    hasMore = page < customerPage.totalPages();
+                }
+            }
+            customerIds = ids;
         } catch (Exception e) {
-            log.warn("Failed to load customer page count: {}", e.getMessage());
-            customerTotalPages = 1;
+            log.warn("Failed to load customer IDs: {}", e.getMessage());
+            customerIds = List.of();
         }
     }
 
     private Mono<Void> sendOrder(int browsePages) {
         List<Long> pids = productIds;
-        if (pids.isEmpty()) {
+        List<Long> cids = customerIds;
+        if (pids.isEmpty() || cids.isEmpty()) {
             failed.incrementAndGet();
             return Mono.empty();
         }
@@ -160,27 +174,10 @@ class ShopaholicController {
                 }, 5)
                 .then();
 
-        Mono<Long> customerIdMono;
-        if (browsePages > 0) {
-            int randomPage = ThreadLocalRandom.current().nextInt(customerTotalPages);
-            customerIdMono = webClient.get().uri(customersUrl + "?page=" + randomPage + "&size=100")
-                    .retrieve().bodyToMono(CustomerPage.class)
-                    .flatMap(customerPage -> {
-                        if (customerPage.content().isEmpty()) {
-                            return Mono.error(new IllegalStateException("Empty customer page"));
-                        }
-                        return Mono.just(customerPage.content()
-                                .get(ThreadLocalRandom.current().nextInt(customerPage.content().size()))
-                                .id());
-                    });
-        } else {
-            customerIdMono = Mono.just((long) (ThreadLocalRandom.current().nextInt(100000) + 1));
-        }
-
+        Long customerId = cids.get(ThreadLocalRandom.current().nextInt(cids.size()));
         boolean kafkaPath = useKafka;
 
-        return browsing.then(customerIdMono)
-                .flatMap(customerId -> {
+        return browsing.then(Mono.defer(() -> {
                     OrderRequest request = new OrderRequest(productId, customerId, idempotencyKey);
                     if (kafkaPath) {
                         return Mono.fromFuture(
@@ -193,9 +190,9 @@ class ShopaholicController {
                                 .retrieve()
                                 .bodyToMono(String.class)
                                 .retryWhen(Retry.backoff(3, Duration.ofMillis(100))
-                                    .maxBackoff(Duration.ofSeconds(2)));
+                                        .maxBackoff(Duration.ofSeconds(2)));
                     }
-                })
+                }))
                 .doOnSuccess(r -> succeeded.incrementAndGet())
                 .doOnError(e -> {
                     failed.incrementAndGet();
